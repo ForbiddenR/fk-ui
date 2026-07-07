@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  # ── JobManager ─────────────────────────────────────────────
+  jobmanager:
+    image: flink:2.3.0-java17
+    container_name: flink-jobmanager
+    hostname: jobmanager
+    ports:
+      - "8081:8081"        # Web UI
+      - "6123:6123"        # Blob server / RPC
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 2048m
+        taskmanager.memory.process.size: 2048m
+        parallelism.default: 2
+        rest.bind-address: 0.0.0.0
+    command: jobmanager
+    networks:
+      - flink-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 15s
+      retries: 5
+      start_period: 30s
+
+  # ── TaskManager ────────────────────────────────────────────
+  taskmanager:
+    image: flink:2.3.0-java17
+    container_name: flink-taskmanager
+    hostname: taskmanager
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 2048m
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+    command: taskmanager
+    networks:
+      - flink-net
+    # Scale out with:  docker compose up -d --scale taskmanager=3
+    # (keeps first one as `flink-taskmanager`, adds `flink-taskmanager-2`, etc.)
+
+networks:
+  flink-net:
+    driver: bridge
