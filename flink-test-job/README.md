@@ -1,8 +1,10 @@
 # Long-Running Flink Test Job
 
-This is a small Java Flink job for dashboard testing.
+This is a small Java 17 Flink job for dashboard testing.
 
 It continuously generates synthetic events, groups them by key, runs a processing-time tumbling window, and prints one summary per key/window to TaskManager stdout.
+
+The source intentionally uses Java 17 language features such as records, `var`, switch expressions, and text blocks.
 
 Pipeline:
 

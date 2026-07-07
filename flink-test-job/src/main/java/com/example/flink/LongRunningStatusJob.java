@@ -29,64 +29,73 @@ public class LongRunningStatusJob {
             DateTimeFormatter.ISO_INSTANT.withZone(ZoneOffset.UTC);
 
     public static void main(String[] args) throws Exception {
-        ParameterTool params = ParameterTool.fromArgs(args);
+        var params = ParameterTool.fromArgs(args);
+        var settings = JobSettings.from(params);
 
-        int eventsPerSecond = params.getInt("events-per-second", 20);
-        int keyCount = params.getInt("keys", 4);
-        int windowSeconds = params.getInt("window-seconds", 10);
-        long maxEvents = params.getLong("max-events", -1L);
-
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        var env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.getConfig().setGlobalJobParameters(params);
 
         DataStream<TestEvent> events = env
-                .addSource(new SyntheticEventSource(eventsPerSecond, keyCount, maxEvents))
+                .addSource(new SyntheticEventSource(settings))
                 .name("Synthetic Event Source")
                 .assignTimestampsAndWatermarks(WatermarkStrategy.noWatermarks());
 
         events
                 .keyBy(event -> event.key)
-                .window(TumblingProcessingTimeWindows.of(Duration.ofSeconds(windowSeconds)))
+                .window(TumblingProcessingTimeWindows.of(Duration.ofSeconds(settings.windowSeconds())))
                 .aggregate(new EventAggregate())
                 .map(new FormatSummary())
                 .name("Format Window Summary")
                 .print()
                 .name("Print Window Summary");
 
-        env.execute(String.format(
-                Locale.ROOT,
-                "Long Running Status Job - %d eps, %d keys, %ds windows",
-                eventsPerSecond,
-                keyCount,
-                windowSeconds));
+        env.execute("Long Running Status Job - %d eps, %d keys, %ds windows".formatted(
+                settings.eventsPerSecond(),
+                settings.keyCount(),
+                settings.windowSeconds()));
+    }
+
+    public record JobSettings(int eventsPerSecond, int keyCount, int windowSeconds, long maxEvents)
+            implements Serializable {
+        public static JobSettings from(ParameterTool params) {
+            return new JobSettings(
+                    Math.max(1, params.getInt("events-per-second", 20)),
+                    Math.max(1, params.getInt("keys", 4)),
+                    Math.max(1, params.getInt("window-seconds", 10)),
+                    params.getLong("max-events", -1L));
+        }
     }
 
     public static final class SyntheticEventSource extends RichParallelSourceFunction<TestEvent> {
-        private final int eventsPerSecond;
-        private final int keyCount;
-        private final long maxEvents;
+        private final JobSettings settings;
         private volatile boolean running = true;
 
-        public SyntheticEventSource(int eventsPerSecond, int keyCount, long maxEvents) {
-            this.eventsPerSecond = Math.max(1, eventsPerSecond);
-            this.keyCount = Math.max(1, keyCount);
-            this.maxEvents = maxEvents;
+        public SyntheticEventSource(JobSettings settings) {
+            this.settings = settings;
         }
 
         @Override
         public void run(SourceFunction.SourceContext<TestEvent> ctx) throws Exception {
-            int subtaskIndex = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
-            int parallelism = getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks();
+            var taskInfo = getRuntimeContext().getTaskInfo();
+            var runtimeInfo = new SourceRuntimeInfo(
+                    taskInfo.getIndexOfThisSubtask(),
+                    taskInfo.getNumberOfParallelSubtasks());
             long emitted = 0L;
-            long sleepMillis = Math.max(1L, 1000L / eventsPerSecond);
+            long sleepMillis = Math.max(1L, 1000L / settings.eventsPerSecond());
 
-            while (running && (maxEvents < 0 || emitted < maxEvents)) {
+            while (running && (settings.maxEvents() < 0 || emitted < settings.maxEvents())) {
                 long now = System.currentTimeMillis();
-                String key = "key-" + Math.floorMod(emitted + subtaskIndex, keyCount);
-                int value = (int) ((emitted % 10) + 1);
+                String key = "key-" + Math.floorMod(emitted + runtimeInfo.subtaskIndex(), settings.keyCount());
+                int value = syntheticValue(emitted);
 
                 synchronized (ctx.getCheckpointLock()) {
-                    ctx.collect(new TestEvent(key, value, now, subtaskIndex, parallelism, emitted));
+                    ctx.collect(new TestEvent(
+                            key,
+                            value,
+                            now,
+                            runtimeInfo.subtaskIndex(),
+                            runtimeInfo.parallelism(),
+                            emitted));
                 }
 
                 emitted++;
@@ -94,10 +103,22 @@ public class LongRunningStatusJob {
             }
         }
 
+        private static int syntheticValue(long sequence) {
+            return switch ((int) Math.floorMod(sequence, 4)) {
+                case 0 -> 1;
+                case 1 -> 3;
+                case 2 -> 7;
+                default -> 10;
+            };
+        }
+
         @Override
         public void cancel() {
             running = false;
         }
+    }
+
+    public record SourceRuntimeInfo(int subtaskIndex, int parallelism) implements Serializable {
     }
 
     public static final class EventAggregate implements AggregateFunction<TestEvent, SummaryAccumulator, WindowSummary> {
@@ -149,14 +170,14 @@ public class LongRunningStatusJob {
     public static final class FormatSummary implements MapFunction<WindowSummary, String> {
         @Override
         public String map(WindowSummary summary) {
-            return String.format(
-                    Locale.ROOT,
-                    "window-summary key=%s count=%d sum=%d first=%s last=%s",
-                    summary.key,
-                    summary.count,
-                    summary.sum,
-                    FORMATTER.format(Instant.ofEpochMilli(summary.firstEventTime)),
-                    FORMATTER.format(Instant.ofEpochMilli(summary.lastEventTime)));
+            var template = """
+                    window-summary key=%s count=%d sum=%d first=%s last=%s""";
+            return template.formatted(
+                    summary.key(),
+                    summary.count(),
+                    summary.sum(),
+                    FORMATTER.format(Instant.ofEpochMilli(summary.firstEventTime())),
+                    FORMATTER.format(Instant.ofEpochMilli(summary.lastEventTime())));
         }
     }
 
@@ -189,22 +210,11 @@ public class LongRunningStatusJob {
         public long lastEventTime;
     }
 
-    public static final class WindowSummary implements Serializable {
-        public String key;
-        public long count;
-        public long sum;
-        public long firstEventTime;
-        public long lastEventTime;
-
-        public WindowSummary() {
-        }
-
-        public WindowSummary(String key, long count, long sum, long firstEventTime, long lastEventTime) {
-            this.key = key;
-            this.count = count;
-            this.sum = sum;
-            this.firstEventTime = firstEventTime;
-            this.lastEventTime = lastEventTime;
-        }
+    public record WindowSummary(
+            String key,
+            long count,
+            long sum,
+            long firstEventTime,
+            long lastEventTime) implements Serializable {
     }
 }
