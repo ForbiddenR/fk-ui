@@ -1,0 +1,33 @@
+# Maven / Java build output
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Flink local runtime data
+flink-cluster/flink-data/
+flink-cluster/data/
+flink-cluster/checkpoints/
+flink-cluster/savepoints/
+flink-cluster/logs/
+
+# Logs
+*.log
+logs/
+
+# IDE / editor files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.DS_Store
+
+# OS files
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.cache/

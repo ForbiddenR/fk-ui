@@ -38,6 +38,31 @@ docker cp my-job.jar flink-jobmanager:/job.jar
 docker exec flink-jobmanager flink run /job.jar
 ```
 
+## Long-Running Test Job
+
+A buildable test job is available in `../flink-test-job`. It continuously generates synthetic events, runs `keyBy + window`, and prints summaries to TaskManager stdout.
+
+```bash
+cd ../flink-test-job
+mvn clean package
+
+docker cp target/flink-test-job-1.0.0.jar flink-jobmanager:/long-running-test-job.jar
+
+docker exec flink-jobmanager flink run -d -p 2 \
+  /long-running-test-job.jar \
+  --events-per-second 10 \
+  --keys 4 \
+  --window-seconds 10
+```
+
+View it in the dashboard under **Running Jobs**.
+
+Printed window output is in TaskManager stdout:
+
+```bash
+docker logs flink-taskmanager 2>&1 | grep 'window-summary'
+```
+
 ## SQL Client
 
 ```bash
